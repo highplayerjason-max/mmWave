@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+
+.vscode/
+
+# Captured radar data and generated diagnostics
+*.csv
+sessions/
+diag_*.txt
+
+# Local environment files
+.env
+.venv/
+venv/

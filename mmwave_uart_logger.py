@@ -15,6 +15,10 @@ HEADER_LEN = 40
 TLV_HEADER_LEN = 8
 
 TLV_DETECTED_POINTS = 1
+TLV_RANGE_PROFILE = 2
+TLV_NOISE_PROFILE = 3
+TLV_RANGE_DOPPLER_HEATMAP = 5
+TLV_STATS = 6
 TLV_SIDE_INFO = 7
 
 
@@ -101,6 +105,10 @@ def parse_packet(packet: bytes) -> dict:
 
     points: list[RadarPoint] = []
     side_info: list[tuple[int, int]] = []
+    range_profile: list[int] = []
+    noise_profile: list[int] = []
+    range_doppler_heatmap: list[int] = []
+    stats = {}
     offset = HEADER_LEN
 
     for _ in range(num_tlvs):
@@ -121,6 +129,33 @@ def parse_packet(packet: bytes) -> dict:
                 snr, noise = struct.unpack_from("<2H", payload, i * 4)
                 side_info.append((snr, noise))
 
+        elif tlv_type == TLV_RANGE_PROFILE:
+            range_profile = list(struct.unpack_from(f"<{len(payload) // 2}H", payload, 0)) if payload else []
+
+        elif tlv_type == TLV_NOISE_PROFILE:
+            noise_profile = list(struct.unpack_from(f"<{len(payload) // 2}H", payload, 0)) if payload else []
+
+        elif tlv_type == TLV_RANGE_DOPPLER_HEATMAP:
+            range_doppler_heatmap = list(struct.unpack_from(f"<{len(payload) // 2}H", payload, 0)) if payload else []
+
+        elif tlv_type == TLV_STATS and len(payload) >= 24:
+            (
+                inter_frame_processing_time,
+                transmit_output_time,
+                inter_frame_processing_margin,
+                inter_chirp_processing_margin,
+                active_frame_cpu_load,
+                inter_frame_cpu_load,
+            ) = struct.unpack_from("<6I", payload, 0)
+            stats = {
+                "inter_frame_processing_time": inter_frame_processing_time,
+                "transmit_output_time": transmit_output_time,
+                "inter_frame_processing_margin": inter_frame_processing_margin,
+                "inter_chirp_processing_margin": inter_chirp_processing_margin,
+                "active_frame_cpu_load": active_frame_cpu_load,
+                "inter_frame_cpu_load": inter_frame_cpu_load,
+            }
+
     for point, (snr, noise) in zip(points, side_info):
         point.snr = snr
         point.noise = noise
@@ -135,6 +170,10 @@ def parse_packet(packet: bytes) -> dict:
         "num_tlvs": num_tlvs,
         "subframe_number": subframe_number,
         "points": points,
+        "range_profile": range_profile,
+        "noise_profile": noise_profile,
+        "range_doppler_heatmap": range_doppler_heatmap,
+        "stats": stats,
     }
 
 

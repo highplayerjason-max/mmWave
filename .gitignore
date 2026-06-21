@@ -7,6 +7,11 @@ __pycache__/
 *.csv
 sessions/
 diag_*.txt
+diag_radar_images/
+tmp_papers/
+gh_debug.txt
+path_before_fix.txt
+machine_path_before_git_fix.txt
 
 # Local environment files
 .env

@@ -19,6 +19,7 @@ import serial
 from serial.tools import list_ports
 
 from mmwave_uart_logger import find_next_packet, parse_packet, send_config
+from radar_objects import cluster_points
 
 
 DEFAULT_CFG = Path(
@@ -342,6 +343,8 @@ class RadarGui(tk.Tk):
 
         blank = np.zeros((80, 80), dtype=np.float32)
         self.xy_image = self.ax_xy.imshow(blank, origin="lower", aspect="auto", extent=(-3, 3, 0, 6), cmap="magma", vmin=0, vmax=400)
+        self.object_markers = self.ax_xy.scatter([], [], s=[], facecolors="none", edgecolors="cyan", linewidths=1.8)
+        self.object_labels = []
         self.ax_xy.set_title("XY sensor image")
         self.ax_xy.set_xlabel("x lateral (m)")
         self.ax_xy.set_ylabel("y forward (m)")
@@ -558,6 +561,8 @@ class RadarGui(tk.Tk):
 
         self.xy_image.set_data(live_heatmap(recent_points, "xy"))
         self.yz_image.set_data(live_heatmap(recent_points, "yz"))
+        objects = cluster_points(recent_points)
+        self._update_object_overlay(objects)
         self._update_range_profile(frame)
         self._update_range_doppler(frame)
 
@@ -569,10 +574,37 @@ class RadarGui(tk.Tk):
 
         self.info_text.set_text(
             "\n".join(
-                self._info_lines(elapsed_s, frame)
+                self._info_lines(elapsed_s, frame, objects)
             )
         )
         self.canvas.draw_idle()
+
+    def _update_object_overlay(self, objects) -> None:
+        for label in self.object_labels:
+            label.remove()
+        self.object_labels.clear()
+
+        if not objects:
+            self.object_markers.set_offsets(np.empty((0, 2)))
+            self.object_markers.set_sizes([])
+            return
+
+        offsets = np.array([[obj.x, obj.y] for obj in objects], dtype=np.float32)
+        sizes = np.array([max(90, min(420, obj.point_count * 45)) for obj in objects], dtype=np.float32)
+        self.object_markers.set_offsets(offsets)
+        self.object_markers.set_sizes(sizes)
+        for obj in objects:
+            label = self.ax_xy.text(
+                obj.x,
+                obj.y,
+                f"#{obj.object_id} {obj.range_m:.1f}m",
+                color="cyan",
+                fontsize=8,
+                ha="left",
+                va="bottom",
+                weight="bold",
+            )
+            self.object_labels.append(label)
 
     def _update_range_profile(self, frame: dict) -> None:
         profile = frame.get("range_profile", [])
@@ -602,7 +634,7 @@ class RadarGui(tk.Tk):
             self.rd_image.set_data(live_heatmap(frame["points"], "rv")[:32])
             self.rd_image.set_extent((0, 9.0, -20.0, 20.0))
 
-    def _info_lines(self, elapsed_s: float, frame: dict) -> list[str]:
+    def _info_lines(self, elapsed_s: float, frame: dict, objects) -> list[str]:
         points = frame["points"]
         strong = strongest_point(points)
         close = closest_point(points)
@@ -636,6 +668,16 @@ class RadarGui(tk.Tk):
                 ]
             )
 
+        if objects:
+            lines.extend(["", "object candidates"])
+            for obj in objects[:4]:
+                side = "R" if obj.x > 0 else "L"
+                lines.append(
+                    f"  #{obj.object_id}: {obj.range_m:.2f}m {side}{abs(obj.x):.2f}m "
+                    f"az={obj.azimuth_deg:+.1f}deg z={obj.z:+.2f} "
+                    f"v={obj.mean_velocity:+.2f} n={obj.point_count} snr={obj.peak_snr}"
+                )
+
         if profile:
             peak_idx = int(np.argmax(np.array(profile)))
             axis = range_axis(len(profile))
@@ -659,7 +701,7 @@ class RadarGui(tk.Tk):
                 ]
             )
 
-        lines.extend(["", "Tip: put a metal object at 1m and look for the range-profile peak."])
+        lines.extend(["", "Tip: cyan circles are clustered object candidates from recent frames."])
         return lines
 
     def _on_close(self) -> None:

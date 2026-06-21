@@ -160,7 +160,9 @@ The GUI provides:
 - preflight checks for busy data port and missing CLI prompt
 - optional CSV logging
 - live XY, YZ, XZ, and range-velocity radar sensor images
-- point-count plot and frame status
+- live range profile, with 0.5m/1.0m/1.5m/2.0m reference lines
+- range-Doppler TLV view when enabled, with a point-derived fallback view
+- strongest/closest target summaries, point-count plot, and frame status
 
 Use `Skip config` when the radar is already running. Uncheck it after a board
 reset if you want the GUI to send `profile_3d.cfg` before streaming.

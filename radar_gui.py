@@ -343,13 +343,15 @@ class RadarGui(tk.Tk):
 
         blank = np.zeros((80, 80), dtype=np.float32)
         self.xy_image = self.ax_xy.imshow(blank, origin="lower", aspect="auto", extent=(-3, 3, 0, 6), cmap="magma", vmin=0, vmax=400)
-        self.object_markers = self.ax_xy.scatter([], [], s=[], facecolors="none", edgecolors="cyan", linewidths=1.8)
-        self.object_labels = []
+        self.xy_object_markers = self.ax_xy.scatter([], [], s=[], facecolors="none", edgecolors="cyan", linewidths=1.8)
+        self.xy_object_labels = []
         self.ax_xy.set_title("XY sensor image")
         self.ax_xy.set_xlabel("x lateral (m)")
         self.ax_xy.set_ylabel("y forward (m)")
 
         self.yz_image = self.ax_yz.imshow(blank, origin="lower", aspect="auto", extent=(0, 6, -2, 2), cmap="magma", vmin=0, vmax=400)
+        self.yz_object_markers = self.ax_yz.scatter([], [], s=[], facecolors="none", edgecolors="cyan", linewidths=1.8)
+        self.yz_object_labels = []
         self.ax_yz.set_title("YZ sensor image")
         self.ax_yz.set_xlabel("y forward (m)")
         self.ax_yz.set_ylabel("z vertical (m)")
@@ -580,21 +582,29 @@ class RadarGui(tk.Tk):
         self.canvas.draw_idle()
 
     def _update_object_overlay(self, objects) -> None:
-        for label in self.object_labels:
+        for label in self.xy_object_labels:
             label.remove()
-        self.object_labels.clear()
+        self.xy_object_labels.clear()
+        for label in self.yz_object_labels:
+            label.remove()
+        self.yz_object_labels.clear()
 
         if not objects:
-            self.object_markers.set_offsets(np.empty((0, 2)))
-            self.object_markers.set_sizes([])
+            self.xy_object_markers.set_offsets(np.empty((0, 2)))
+            self.xy_object_markers.set_sizes([])
+            self.yz_object_markers.set_offsets(np.empty((0, 2)))
+            self.yz_object_markers.set_sizes([])
             return
 
-        offsets = np.array([[obj.x, obj.y] for obj in objects], dtype=np.float32)
+        xy_offsets = np.array([[obj.x, obj.y] for obj in objects], dtype=np.float32)
+        yz_offsets = np.array([[obj.y, obj.z] for obj in objects], dtype=np.float32)
         sizes = np.array([max(90, min(420, obj.point_count * 45)) for obj in objects], dtype=np.float32)
-        self.object_markers.set_offsets(offsets)
-        self.object_markers.set_sizes(sizes)
+        self.xy_object_markers.set_offsets(xy_offsets)
+        self.xy_object_markers.set_sizes(sizes)
+        self.yz_object_markers.set_offsets(yz_offsets)
+        self.yz_object_markers.set_sizes(sizes)
         for obj in objects:
-            label = self.ax_xy.text(
+            xy_label = self.ax_xy.text(
                 obj.x,
                 obj.y,
                 f"#{obj.object_id} {obj.range_m:.1f}m",
@@ -604,7 +614,18 @@ class RadarGui(tk.Tk):
                 va="bottom",
                 weight="bold",
             )
-            self.object_labels.append(label)
+            self.xy_object_labels.append(xy_label)
+            yz_label = self.ax_yz.text(
+                obj.y,
+                obj.z,
+                f"#{obj.object_id}",
+                color="cyan",
+                fontsize=8,
+                ha="left",
+                va="bottom",
+                weight="bold",
+            )
+            self.yz_object_labels.append(yz_label)
 
     def _update_range_profile(self, frame: dict) -> None:
         profile = frame.get("range_profile", [])
@@ -627,12 +648,17 @@ class RadarGui(tk.Tk):
             image = range_doppler_image(values)
             self.rd_image.set_data(image)
             self.rd_image.set_extent((0, 9.04, -20.16, 20.16))
-            self.rd_image.set_clim(vmin=float(np.min(image)), vmax=float(np.max(image) or 1.0))
+            vmax = float(np.percentile(image, 99)) if image.size else 1.0
+            self.rd_image.set_clim(vmin=float(np.min(image)), vmax=max(vmax, 1.0))
+            self.ax_rd.set_title("Range-Doppler TLV")
         else:
             # Fallback view from detected points. This is not the raw TI heatmap,
             # but still gives a human-readable range/velocity summary.
-            self.rd_image.set_data(live_heatmap(frame["points"], "rv")[:32])
+            image = live_heatmap(frame["points"], "rv")[:32]
+            self.rd_image.set_data(image)
             self.rd_image.set_extent((0, 9.0, -20.0, 20.0))
+            self.rd_image.set_clim(vmin=0.0, vmax=max(float(np.max(image)), 1.0))
+            self.ax_rd.set_title("Range-Velocity fallback")
 
     def _info_lines(self, elapsed_s: float, frame: dict, objects) -> list[str]:
         points = frame["points"]

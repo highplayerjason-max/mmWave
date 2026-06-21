@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
 import matplotlib
+import numpy as np
 
 matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -57,6 +58,45 @@ def send_cli_command(port: str, baud: int, command: str, delay: float = 0.5) -> 
         cli_serial.write((command + "\n").encode("ascii"))
         time.sleep(delay)
         return cli_serial.read(4096).decode(errors="ignore")
+
+
+def live_heatmap(points, view: str, grid_size: int = 80) -> np.ndarray:
+    if view == "xy":
+        a = np.array([point.x for point in points], dtype=np.float32)
+        b = np.array([point.y for point in points], dtype=np.float32)
+        a_range = (-3.0, 3.0)
+        b_range = (0.0, 6.0)
+    elif view == "yz":
+        a = np.array([point.y for point in points], dtype=np.float32)
+        b = np.array([point.z for point in points], dtype=np.float32)
+        a_range = (0.0, 6.0)
+        b_range = (-2.0, 2.0)
+    elif view == "xz":
+        a = np.array([point.x for point in points], dtype=np.float32)
+        b = np.array([point.z for point in points], dtype=np.float32)
+        a_range = (-3.0, 3.0)
+        b_range = (-2.0, 2.0)
+    elif view == "rv":
+        a = np.array([(point.x * point.x + point.y * point.y + point.z * point.z) ** 0.5 for point in points], dtype=np.float32)
+        b = np.array([point.velocity for point in points], dtype=np.float32)
+        a_range = (0.0, 9.0)
+        b_range = (-20.0, 20.0)
+    else:
+        raise ValueError(f"Unknown heatmap view: {view}")
+
+    if len(points) == 0:
+        return np.zeros((grid_size, grid_size), dtype=np.float32)
+
+    snr = np.array([point.snr or 0 for point in points], dtype=np.float32)
+    heat = np.zeros((grid_size, grid_size), dtype=np.float32)
+    a_edges = np.linspace(a_range[0], a_range[1], grid_size + 1)
+    b_edges = np.linspace(b_range[0], b_range[1], grid_size + 1)
+    a_idx = np.clip(np.searchsorted(a_edges, a, side="right") - 1, 0, grid_size - 1)
+    b_idx = np.clip(np.searchsorted(b_edges, b, side="right") - 1, 0, grid_size - 1)
+    valid = (a >= a_range[0]) & (a <= a_range[1]) & (b >= b_range[0]) & (b <= b_range[1])
+    for ai, bi, value in zip(a_idx[valid], b_idx[valid], snr[valid]):
+        heat[bi, ai] = max(heat[bi, ai], value)
+    return heat
 
 
 class RadarWorker(threading.Thread):
@@ -257,34 +297,40 @@ class RadarGui(tk.Tk):
         ttk.Label(status_bar, textvariable=self.status).pack(side=tk.LEFT)
         ttk.Label(status_bar, textvariable=self.stats).pack(side=tk.RIGHT)
 
-        self.figure = Figure(figsize=(11, 6.6), dpi=100)
-        self.ax_xy = self.figure.add_subplot(221)
-        self.ax_counts = self.figure.add_subplot(222)
-        self.ax_vel = self.figure.add_subplot(223)
-        self.ax_info = self.figure.add_subplot(224)
+        self.figure = Figure(figsize=(11, 7.2), dpi=100)
+        self.ax_xy = self.figure.add_subplot(231)
+        self.ax_yz = self.figure.add_subplot(232)
+        self.ax_xz = self.figure.add_subplot(233)
+        self.ax_rv = self.figure.add_subplot(234)
+        self.ax_counts = self.figure.add_subplot(235)
+        self.ax_info = self.figure.add_subplot(236)
 
-        self.xy_scatter = self.ax_xy.scatter([], [], s=18, c=[], cmap="viridis", vmin=0, vmax=400)
-        self.figure.colorbar(self.xy_scatter, ax=self.ax_xy, label="SNR")
-        self.ax_xy.set_title("Top-Down XY Point Cloud")
+        blank = np.zeros((80, 80), dtype=np.float32)
+        self.xy_image = self.ax_xy.imshow(blank, origin="lower", aspect="auto", extent=(-3, 3, 0, 6), cmap="magma", vmin=0, vmax=400)
+        self.ax_xy.set_title("XY sensor image")
         self.ax_xy.set_xlabel("x lateral (m)")
         self.ax_xy.set_ylabel("y forward (m)")
-        self.ax_xy.set_xlim(-3, 3)
-        self.ax_xy.set_ylim(0, 6)
-        self.ax_xy.grid(True, alpha=0.3)
+
+        self.yz_image = self.ax_yz.imshow(blank, origin="lower", aspect="auto", extent=(0, 6, -2, 2), cmap="magma", vmin=0, vmax=400)
+        self.ax_yz.set_title("YZ sensor image")
+        self.ax_yz.set_xlabel("y forward (m)")
+        self.ax_yz.set_ylabel("z vertical (m)")
+
+        self.xz_image = self.ax_xz.imshow(blank, origin="lower", aspect="auto", extent=(-3, 3, -2, 2), cmap="magma", vmin=0, vmax=400)
+        self.ax_xz.set_title("XZ sensor image")
+        self.ax_xz.set_xlabel("x lateral (m)")
+        self.ax_xz.set_ylabel("z vertical (m)")
+
+        self.rv_image = self.ax_rv.imshow(blank, origin="lower", aspect="auto", extent=(0, 9, -20, 20), cmap="magma", vmin=0, vmax=400)
+        self.ax_rv.set_title("Range-Velocity image")
+        self.ax_rv.set_xlabel("range (m)")
+        self.ax_rv.set_ylabel("velocity (m/s)")
 
         (self.count_line,) = self.ax_counts.plot([], [], linewidth=1.5)
         self.ax_counts.set_title("Detected Points Per Frame")
         self.ax_counts.set_xlabel("elapsed time (s)")
         self.ax_counts.set_ylabel("points")
         self.ax_counts.grid(True, alpha=0.3)
-
-        self.vel_scatter = self.ax_vel.scatter([], [], s=8, c=[], cmap="plasma", vmin=0, vmax=9)
-        self.figure.colorbar(self.vel_scatter, ax=self.ax_vel, label="range (m)")
-        self.ax_vel.set_title("Velocity Over Time")
-        self.ax_vel.set_xlabel("elapsed time (s)")
-        self.ax_vel.set_ylabel("velocity (m/s)")
-        self.ax_vel.set_ylim(-5, 5)
-        self.ax_vel.grid(True, alpha=0.3)
 
         self.ax_info.axis("off")
         self.info_text = self.ax_info.text(0.02, 0.95, "No frame yet", va="top", family="monospace")
@@ -465,32 +511,21 @@ class RadarGui(tk.Tk):
         self.frame_times.append(elapsed_s)
         self.frame_counts.append(len(points))
 
-        xs = []
-        ys = []
-        snrs = []
+        recent_points = []
         for history_points in self.point_history:
             for point in history_points:
-                xs.append(point.x)
-                ys.append(point.y)
-                snrs.append(point.snr or 0)
-        self.xy_scatter.set_offsets(list(zip(xs, ys)) if xs else [])
-        self.xy_scatter.set_array(snrs)
+                recent_points.append(point)
+
+        self.xy_image.set_data(live_heatmap(recent_points, "xy"))
+        self.yz_image.set_data(live_heatmap(recent_points, "yz"))
+        self.xz_image.set_data(live_heatmap(recent_points, "xz"))
+        self.rv_image.set_data(live_heatmap(recent_points, "rv"))
 
         self.count_line.set_data(list(self.frame_times), list(self.frame_counts))
         if self.frame_times:
             self.ax_counts.set_xlim(max(0, self.frame_times[0]), max(5, self.frame_times[-1]))
         max_count = max(self.frame_counts) if self.frame_counts else 1
         self.ax_counts.set_ylim(0, max(10, max_count * 1.2))
-
-        for point in points:
-            rng = (point.x * point.x + point.y * point.y + point.z * point.z) ** 0.5
-            self.velocity_times.append(elapsed_s)
-            self.velocities.append(point.velocity)
-            self.velocity_ranges.append(rng)
-        self.vel_scatter.set_offsets(list(zip(self.velocity_times, self.velocities)) if self.velocity_times else [])
-        self.vel_scatter.set_array(list(self.velocity_ranges))
-        if self.velocity_times:
-            self.ax_vel.set_xlim(max(0, self.velocity_times[0]), max(5, self.velocity_times[-1]))
 
         self.info_text.set_text(
             "\n".join(

@@ -99,6 +99,41 @@ def live_heatmap(points, view: str, grid_size: int = 80) -> np.ndarray:
     return heat
 
 
+def strongest_point(points):
+    if not points:
+        return None
+    return max(points, key=lambda point: point.snr or 0)
+
+
+def closest_point(points):
+    if not points:
+        return None
+    return min(points, key=lambda point: (point.x * point.x + point.y * point.y + point.z * point.z) ** 0.5)
+
+
+def point_range(point) -> float:
+    return (point.x * point.x + point.y * point.y + point.z * point.z) ** 0.5
+
+
+def range_axis(profile_len: int, max_range_m: float = 9.04) -> np.ndarray:
+    if profile_len <= 0:
+        return np.array([], dtype=np.float32)
+    return np.linspace(0.0, max_range_m, profile_len, endpoint=False, dtype=np.float32)
+
+
+def range_doppler_image(values: list[int], range_bins: int = 256) -> np.ndarray:
+    if not values:
+        return np.zeros((32, range_bins), dtype=np.float32)
+    arr = np.array(values, dtype=np.float32)
+    if len(arr) % range_bins != 0:
+        side = int(np.sqrt(len(arr)))
+        if side > 0 and side * side == len(arr):
+            return arr.reshape(side, side)
+        return arr.reshape(1, -1)
+    doppler_bins = len(arr) // range_bins
+    return arr.reshape(doppler_bins, range_bins)
+
+
 class RadarWorker(threading.Thread):
     def __init__(
         self,
@@ -300,8 +335,8 @@ class RadarGui(tk.Tk):
         self.figure = Figure(figsize=(11, 7.2), dpi=100)
         self.ax_xy = self.figure.add_subplot(231)
         self.ax_yz = self.figure.add_subplot(232)
-        self.ax_xz = self.figure.add_subplot(233)
-        self.ax_rv = self.figure.add_subplot(234)
+        self.ax_range = self.figure.add_subplot(233)
+        self.ax_rd = self.figure.add_subplot(234)
         self.ax_counts = self.figure.add_subplot(235)
         self.ax_info = self.figure.add_subplot(236)
 
@@ -316,15 +351,20 @@ class RadarGui(tk.Tk):
         self.ax_yz.set_xlabel("y forward (m)")
         self.ax_yz.set_ylabel("z vertical (m)")
 
-        self.xz_image = self.ax_xz.imshow(blank, origin="lower", aspect="auto", extent=(-3, 3, -2, 2), cmap="magma", vmin=0, vmax=400)
-        self.ax_xz.set_title("XZ sensor image")
-        self.ax_xz.set_xlabel("x lateral (m)")
-        self.ax_xz.set_ylabel("z vertical (m)")
+        (self.range_line,) = self.ax_range.plot([], [], linewidth=1.2, label="range")
+        (self.noise_line,) = self.ax_range.plot([], [], linewidth=1.0, alpha=0.7, label="noise")
+        self.ax_range.set_title("Range Profile")
+        self.ax_range.set_xlabel("range (m)")
+        self.ax_range.set_ylabel("magnitude")
+        self.ax_range.grid(True, alpha=0.3)
+        self.ax_range.legend(loc="upper right", fontsize=8)
+        for ref_range in (0.5, 1.0, 1.5, 2.0):
+            self.ax_range.axvline(ref_range, color="gray", linestyle=":", linewidth=0.8, alpha=0.5)
 
-        self.rv_image = self.ax_rv.imshow(blank, origin="lower", aspect="auto", extent=(0, 9, -20, 20), cmap="magma", vmin=0, vmax=400)
-        self.ax_rv.set_title("Range-Velocity image")
-        self.ax_rv.set_xlabel("range (m)")
-        self.ax_rv.set_ylabel("velocity (m/s)")
+        self.rd_image = self.ax_rd.imshow(blank[:32], origin="lower", aspect="auto", extent=(0, 9.04, -20.16, 20.16), cmap="magma")
+        self.ax_rd.set_title("Range-Doppler TLV")
+        self.ax_rd.set_xlabel("range (m)")
+        self.ax_rd.set_ylabel("velocity (m/s)")
 
         (self.count_line,) = self.ax_counts.plot([], [], linewidth=1.5)
         self.ax_counts.set_title("Detected Points Per Frame")
@@ -518,8 +558,8 @@ class RadarGui(tk.Tk):
 
         self.xy_image.set_data(live_heatmap(recent_points, "xy"))
         self.yz_image.set_data(live_heatmap(recent_points, "yz"))
-        self.xz_image.set_data(live_heatmap(recent_points, "xz"))
-        self.rv_image.set_data(live_heatmap(recent_points, "rv"))
+        self._update_range_profile(frame)
+        self._update_range_doppler(frame)
 
         self.count_line.set_data(list(self.frame_times), list(self.frame_counts))
         if self.frame_times:
@@ -529,18 +569,98 @@ class RadarGui(tk.Tk):
 
         self.info_text.set_text(
             "\n".join(
-                [
-                    f"frame_number : {frame['frame_number']}",
-                    f"elapsed_s    : {elapsed_s:.2f}",
-                    f"points       : {len(points)}",
-                    f"num_tlvs     : {frame['num_tlvs']}",
-                    f"packet_len   : {frame['total_packet_len']}",
-                    "",
-                    "Use Start/Stop to control streaming.",
-                ]
+                self._info_lines(elapsed_s, frame)
             )
         )
         self.canvas.draw_idle()
+
+    def _update_range_profile(self, frame: dict) -> None:
+        profile = frame.get("range_profile", [])
+        noise = frame.get("noise_profile", [])
+        x = range_axis(len(profile))
+        self.range_line.set_data(x, profile)
+        if noise:
+            self.noise_line.set_data(range_axis(len(noise)), noise)
+        else:
+            self.noise_line.set_data([], [])
+
+        if len(profile) > 0:
+            max_y = max(max(profile), max(noise) if noise else 0, 1)
+            self.ax_range.set_xlim(0, 9.04)
+            self.ax_range.set_ylim(0, max_y * 1.1)
+
+    def _update_range_doppler(self, frame: dict) -> None:
+        values = frame.get("range_doppler_heatmap", [])
+        if values:
+            image = range_doppler_image(values)
+            self.rd_image.set_data(image)
+            self.rd_image.set_extent((0, 9.04, -20.16, 20.16))
+            self.rd_image.set_clim(vmin=float(np.min(image)), vmax=float(np.max(image) or 1.0))
+        else:
+            # Fallback view from detected points. This is not the raw TI heatmap,
+            # but still gives a human-readable range/velocity summary.
+            self.rd_image.set_data(live_heatmap(frame["points"], "rv")[:32])
+            self.rd_image.set_extent((0, 9.0, -20.0, 20.0))
+
+    def _info_lines(self, elapsed_s: float, frame: dict) -> list[str]:
+        points = frame["points"]
+        strong = strongest_point(points)
+        close = closest_point(points)
+        profile = frame.get("range_profile", [])
+        stats = frame.get("stats", {})
+        lines = [
+            f"frame_number : {frame['frame_number']}",
+            f"elapsed_s    : {elapsed_s:.2f}",
+            f"points       : {len(points)}",
+            f"num_tlvs     : {frame['num_tlvs']}",
+        ]
+
+        if strong is not None:
+            lines.extend(
+                [
+                    "",
+                    "strongest point",
+                    f"  range : {point_range(strong):.2f} m",
+                    f"  x/y/z : {strong.x:.2f}, {strong.y:.2f}, {strong.z:.2f}",
+                    f"  v/snr : {strong.velocity:.2f}, {strong.snr}",
+                ]
+            )
+
+        if close is not None:
+            lines.extend(
+                [
+                    "",
+                    "closest point",
+                    f"  range : {point_range(close):.2f} m",
+                    f"  x/y/z : {close.x:.2f}, {close.y:.2f}, {close.z:.2f}",
+                ]
+            )
+
+        if profile:
+            peak_idx = int(np.argmax(np.array(profile)))
+            axis = range_axis(len(profile))
+            lines.extend(
+                [
+                    "",
+                    "range profile peak",
+                    f"  range : {axis[peak_idx]:.2f} m",
+                    f"  value : {profile[peak_idx]}",
+                ]
+            )
+
+        if stats:
+            lines.extend(
+                [
+                    "",
+                    "stats",
+                    f"  tx output us : {stats.get('transmit_output_time')}",
+                    f"  active CPU   : {stats.get('active_frame_cpu_load')}",
+                    f"  inter CPU    : {stats.get('inter_frame_cpu_load')}",
+                ]
+            )
+
+        lines.extend(["", "Tip: put a metal object at 1m and look for the range-profile peak."])
+        return lines
 
     def _on_close(self) -> None:
         self.stop_event.set()

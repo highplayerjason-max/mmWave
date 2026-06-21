@@ -80,6 +80,31 @@ This produces `radar_features.csv`, with per-window summary features and simple
 range/velocity histograms. It is the first low-cost approximation of a temporal
 radar token.
 
+Generate OmniVLA/MuseVLA-style radar sensor images:
+
+```powershell
+python .\radar_image.py .\sessions\session_YYYYMMDD_HHMMSS\points.csv
+```
+
+This produces:
+
+```text
+radar_images\radar_xy.png
+radar_images\radar_yz.png
+radar_images\radar_xz.png
+radar_images\radar_range_velocity.png
+radar_images\radar_tensor.npz
+```
+
+`radar_tensor.npz` has shape:
+
+```text
+(views, channels, height, width)
+```
+
+with views `xy`, `yz`, `xz`, `range_velocity` and channels `count`, `max_snr`,
+`mean_snr`, `mean_velocity`.
+
 Generate diagnostic plots:
 
 ```powershell
@@ -134,7 +159,8 @@ The GUI provides:
 - `Restart Sensor` for `sensorStop + full profile_3d.cfg + sensorStart`
 - preflight checks for busy data port and missing CLI prompt
 - optional CSV logging
-- live XY point cloud, point-count plot, velocity plot, and frame status
+- live XY, YZ, XZ, and range-velocity radar sensor images
+- point-count plot and frame status
 
 Use `Skip config` when the radar is already running. Uncheck it after a board
 reset if you want the GUI to send `profile_3d.cfg` before streaming.

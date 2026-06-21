@@ -162,10 +162,51 @@ The GUI provides:
 - live XY, YZ, XZ, and range-velocity radar sensor images
 - live range profile, with 0.5m/1.0m/1.5m/2.0m reference lines
 - range-Doppler TLV view when enabled, with a point-derived fallback view
-- strongest/closest target summaries, point-count plot, and frame status
+- clustered object candidates overlaid on the XY view with distance/side labels
+- strongest/closest target summaries, object summaries, point-count plot, and frame status
 
 Use `Skip config` when the radar is already running. Uncheck it after a board
 reset if you want the GUI to send `profile_3d.cfg` before streaming.
 
 If the GUI says the data port is open but no stream arrived, use
 `Restart Sensor`, then click `Start` again with `Skip config` checked.
+
+To try the real TI range-Doppler TLV instead of the point-derived fallback,
+select this config in the GUI and use `Restart Sensor`:
+
+```powershell
+profiles\profile_3d_range_doppler.cfg
+```
+
+This enables:
+
+```text
+guiMonitor -1 1 1 1 0 1 1
+```
+
+It is more interpretable, but it uses more UART bandwidth.
+
+### Making Sense Of Where Objects Are
+
+The raw TI OOB point cloud is not an RGB-like picture. Each point is a strong
+peak in range-Doppler-angle space, so many real objects will not appear as a
+solid shape. To make the output easier to understand, the GUI now groups recent
+detected points into coarse object candidates:
+
+- `#1`, `#2`, ... cyan circles in the XY view are clustered candidates.
+- `x` is left/right in meters, `y` is forward distance in meters, and `z` is
+  vertical height in meters.
+- The info panel lists range, left/right offset, azimuth angle, height, mean
+  velocity, point count, and peak SNR for each candidate.
+
+This follows the practical lesson from OmniVLA/MuseVLA-style systems: do not
+feed or inspect sparse raw radar points directly. First convert the sensor
+measurement into a spatially grounded image or mask. In this project, the
+current no-RGB version is:
+
+```text
+TI point cloud / range profile / range-Doppler TLV
+    -> XY/YZ/range-velocity sensor images
+    -> clustered object candidates
+    -> optional saved radar images/tensors for later model training
+```

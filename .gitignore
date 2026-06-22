@@ -6,6 +6,7 @@ __pycache__/
 # Captured radar data and generated diagnostics
 *.csv
 sessions/
+captures/
 outputs/
 diag_*.txt
 diag_radar_images/

@@ -17,6 +17,7 @@ TLV_HEADER_LEN = 8
 TLV_DETECTED_POINTS = 1
 TLV_RANGE_PROFILE = 2
 TLV_NOISE_PROFILE = 3
+TLV_AZIMUTH_STATIC_HEATMAP = 4
 TLV_RANGE_DOPPLER_HEATMAP = 5
 TLV_STATS = 6
 TLV_SIDE_INFO = 7
@@ -107,6 +108,7 @@ def parse_packet(packet: bytes) -> dict:
     side_info: list[tuple[int, int]] = []
     range_profile: list[int] = []
     noise_profile: list[int] = []
+    azimuth_static_heatmap: list[complex] = []
     range_doppler_heatmap: list[int] = []
     stats = {}
     offset = HEADER_LEN
@@ -134,6 +136,13 @@ def parse_packet(packet: bytes) -> dict:
 
         elif tlv_type == TLV_NOISE_PROFILE:
             noise_profile = list(struct.unpack_from(f"<{len(payload) // 2}H", payload, 0)) if payload else []
+
+        elif tlv_type == TLV_AZIMUTH_STATIC_HEATMAP:
+            # TI sends Imag first, Real second for each virtual antenna/range bin.
+            azimuth_static_heatmap = [
+                complex(real, imag)
+                for imag, real in struct.iter_unpack("<hh", payload[: len(payload) - (len(payload) % 4)])
+            ]
 
         elif tlv_type == TLV_RANGE_DOPPLER_HEATMAP:
             range_doppler_heatmap = list(struct.unpack_from(f"<{len(payload) // 2}H", payload, 0)) if payload else []
@@ -172,6 +181,7 @@ def parse_packet(packet: bytes) -> dict:
         "points": points,
         "range_profile": range_profile,
         "noise_profile": noise_profile,
+        "azimuth_static_heatmap": azimuth_static_heatmap,
         "range_doppler_heatmap": range_doppler_heatmap,
         "stats": stats,
     }
@@ -228,7 +238,12 @@ def open_csv(path: Optional[Path]):
 
 def log_frame(frame: dict, writer: Optional[csv.DictWriter]) -> None:
     points: list[RadarPoint] = frame["points"]
-    print(f"Frame {frame['frame_number']} | points: {len(points)}")
+    azimuth_bins = len(frame.get("azimuth_static_heatmap", []))
+    range_doppler_bins = len(frame.get("range_doppler_heatmap", []))
+    print(
+        f"Frame {frame['frame_number']} | points: {len(points)} | "
+        f"azimuth bins: {azimuth_bins} | range-doppler bins: {range_doppler_bins}"
+    )
 
     for point in points[:5]:
         print(

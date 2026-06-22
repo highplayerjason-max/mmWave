@@ -241,3 +241,25 @@ The pseudo-camera view treats the antenna like a low-resolution radar camera:
 
 Without RGB calibration, this view is not a real camera overlay. It is a
 camera-like rendering of radar coordinates.
+
+## Replicate RGB-Aligned Demo Figure
+
+The script `replicate_aligned_mmwave.py` reproduces the lightweight alignment
+workflow used by the RGB/mmWave demo repository:
+
+```powershell
+python .\replicate_aligned_mmwave.py `
+  --points-a .\radar_points.csv `
+  --title-a "Current radar sample" `
+  --mm-anchor 1.03,0.66 `
+  --mm-anchor 0.02,0.52 `
+  --px-anchor 505,455 `
+  --px-anchor 890,385 `
+  --out-dir .\outputs\replicate_test
+```
+
+The anchors are manually chosen correspondences. The script computes the
+rotation, scale, and translation, then warps a Gaussian KDE mmWave heatmap into
+`1280 x 720` image coordinates. Add `--rgb-a image.jpg` to put an RGB frame on
+the left side. Add `--points-b`, `--rgb-b`, and `--title-b` to generate the
+two-scene comparison and positive-difference panel.

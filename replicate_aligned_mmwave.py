@@ -42,8 +42,6 @@ def kde_heat(points: np.ndarray, xx: np.ndarray, yy: np.ndarray, sigma_x: float,
     for x, y, snr in points:
         weight = max(0.5, float(snr) - 12.0)
         heat += weight * np.exp(-0.5 * (((xx - x) / sigma_x) ** 2 + ((yy - y) / sigma_y) ** 2))
-    if float(np.max(heat)) > 0:
-        heat /= float(np.max(heat))
     return heat
 
 
@@ -74,6 +72,7 @@ def warp_heat_to_pixels(
     width: int,
     height: int,
     threshold: float,
+    normalize: bool = False,
 ) -> np.ndarray:
     canvas = np.zeros((height, width), dtype=np.float32)
     weights = np.zeros_like(canvas)
@@ -95,19 +94,19 @@ def warp_heat_to_pixels(
                         weights[py, px] += weight
     mask = weights > 0
     canvas[mask] /= weights[mask]
-    if float(np.max(canvas)) > 0:
+    if normalize and float(np.max(canvas)) > 0:
         canvas /= float(np.max(canvas))
     return canvas
 
 
-def plot_scene(rgb_path: Optional[Path], radar_pixels: np.ndarray, title: str, out: Path) -> None:
+def plot_scene(rgb_path: Optional[Path], radar_pixels: np.ndarray, title: str, out: Path, width: int, height: int) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 3.65), dpi=180, constrained_layout=True)
     if rgb_path:
         rgb = plt.imread(rgb_path)
         axes[0].imshow(rgb)
     else:
-        axes[0].imshow(np.ones((720, 1280, 3), dtype=np.float32) * 0.92)
-        axes[0].text(640, 360, "RGB not provided", ha="center", va="center", fontsize=14)
+        axes[0].imshow(np.ones((height, width, 3), dtype=np.float32) * 0.92)
+        axes[0].text(width / 2, height / 2, "RGB not provided", ha="center", va="center", fontsize=14)
     axes[0].set_title(f"{title} RGB")
     axes[0].axis("off")
 
@@ -117,14 +116,14 @@ def plot_scene(rgb_path: Optional[Path], radar_pixels: np.ndarray, title: str, o
         vmin=0,
         vmax=1,
         origin="upper",
-        extent=[0, 1280, 720, 0],
+        extent=[0, width, height, 0],
         interpolation="bilinear",
     )
     axes[1].set_title("Aligned mmWave")
     axes[1].set_xlabel("image u (px)")
     axes[1].set_ylabel("image v (px)")
-    axes[1].set_xlim(0, 1280)
-    axes[1].set_ylim(720, 0)
+    axes[1].set_xlim(0, width)
+    axes[1].set_ylim(height, 0)
     fig.colorbar(im, ax=axes[1], fraction=0.045, pad=0.02)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, bbox_inches="tight")
@@ -146,6 +145,8 @@ def main() -> int:
     parser.add_argument("--soft-common-suppression", type=float, default=0.35)
     parser.add_argument("--gamma", type=float, default=0.68)
     parser.add_argument("--threshold", type=float, default=0.025)
+    parser.add_argument("--width", type=int, default=0, help="Output image width. Defaults to RGB width or 1280.")
+    parser.add_argument("--height", type=int, default=0, help="Output image height. Defaults to RGB height or 720.")
     args = parser.parse_args()
 
     if len(args.mm_anchor) != 2 or len(args.px_anchor) != 2:
@@ -156,6 +157,18 @@ def main() -> int:
     mm_anchors = np.array([parse_pair(item) for item in args.mm_anchor], dtype=np.float64)
     px_anchors = np.array([parse_pair(item) for item in args.px_anchor], dtype=np.float64)
     scale, rot, trans, theta = similarity_from_anchors(mm_anchors, px_anchors)
+    width = args.width
+    height = args.height
+    for rgb_path in (args.rgb_a, args.rgb_b):
+        if rgb_path:
+            import matplotlib.image as mpimg
+
+            image = mpimg.imread(rgb_path)
+            height = height or int(image.shape[0])
+            width = width or int(image.shape[1])
+            break
+    width = width or 1280
+    height = height or 720
 
     heat_a = kde_heat(read_points(args.points_a, limits), xx, yy, 0.075, 0.065)
     heat_b = None
@@ -166,8 +179,12 @@ def main() -> int:
     show_b = heat_b
     if heat_b is not None:
         common = np.minimum(heat_a, heat_b)
-        show_a = np.clip(heat_a - args.soft_common_suppression * common, 0.0, 1.0)
-        show_b = np.clip(heat_b - args.soft_common_suppression * common, 0.0, 1.0)
+        show_a = np.maximum(heat_a - args.soft_common_suppression * common, 0.0)
+        show_b = np.maximum(heat_b - args.soft_common_suppression * common, 0.0)
+
+    scene_max = max(float(np.max(show_a)), float(np.max(show_b)) if show_b is not None else 0.0)
+    if scene_max <= 0:
+        scene_max = 1.0
 
     outputs = []
     for name, heat, rgb, title in (
@@ -176,23 +193,24 @@ def main() -> int:
     ):
         if heat is None:
             continue
-        if float(np.max(heat)) > 0:
-            heat = heat / float(np.max(heat))
+        heat = heat / scene_max
         pixels = warp_heat_to_pixels(
-            enhance(heat, args.gamma), xs, ys, scale, rot, trans, 1280, 720, args.threshold
+            enhance(heat, args.gamma), xs, ys, scale, rot, trans, width, height, args.threshold, normalize=False
         )
         out = args.out_dir / name
-        plot_scene(rgb, pixels, title, out)
+        plot_scene(rgb, pixels, title, out, width, height)
         np.save(out.with_suffix(".heat.npy"), pixels)
         outputs.append(str(out))
 
     if heat_b is not None:
-        diff = np.clip(heat_a - heat_b, 0.0, 1.0)
+        diff = np.maximum(heat_a - heat_b, 0.0)
         if float(np.max(diff)) > 0:
             diff /= float(np.max(diff))
-        pixels = warp_heat_to_pixels(enhance(diff, 0.60), xs, ys, scale, rot, trans, 1280, 720, args.threshold)
+        pixels = warp_heat_to_pixels(
+            enhance(diff, 0.60), xs, ys, scale, rot, trans, width, height, args.threshold, normalize=True
+        )
         out = args.out_dir / "positive_difference_rgb_radar.png"
-        plot_scene(args.rgb_a, pixels, f"{args.title_a} positive difference", out)
+        plot_scene(args.rgb_a, pixels, f"{args.title_a} positive difference", out, width, height)
         np.save(out.with_suffix(".heat.npy"), pixels)
         outputs.append(str(out))
 
@@ -204,6 +222,7 @@ def main() -> int:
         "mmwave_anchors_xy_m": mm_anchors.tolist(),
         "rgb_anchor_pixels": px_anchors.tolist(),
         "limits": limits,
+        "output_size": [width, height],
         "outputs": outputs,
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)

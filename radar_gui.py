@@ -100,6 +100,56 @@ def live_heatmap(points, view: str, grid_size: int = 80) -> np.ndarray:
     return heat
 
 
+def pseudo_camera_image(
+    points,
+    width: int = 640,
+    height: int = 360,
+    horizontal_fov_deg: float = 90.0,
+    vertical_fov_deg: float = 55.0,
+    max_range_m: float = 6.0,
+) -> np.ndarray:
+    """Render radar returns as a camera-like black-background sensor image."""
+    image = np.zeros((height, width), dtype=np.float32)
+    if not points:
+        return image
+
+    yy, xx = np.mgrid[0:height, 0:width]
+    half_h = horizontal_fov_deg / 2.0
+    half_v = vertical_fov_deg / 2.0
+
+    for point in points:
+        range_m = point_range(point)
+        if point.y <= 0.05 or range_m <= 0.05 or range_m > max_range_m:
+            continue
+
+        azimuth_deg = np.degrees(np.arctan2(point.x, point.y))
+        elevation_deg = np.degrees(np.arctan2(point.z, (point.x * point.x + point.y * point.y) ** 0.5))
+        if not (-half_h <= azimuth_deg <= half_h and -half_v <= elevation_deg <= half_v):
+            continue
+
+        u = (azimuth_deg + half_h) / horizontal_fov_deg * (width - 1)
+        v = (half_v - elevation_deg) / vertical_fov_deg * (height - 1)
+
+        snr = float(point.snr or 80)
+        strength = max(0.15, min(1.0, snr / 350.0))
+        sigma = max(3.0, min(18.0, 15.0 - range_m * 1.5))
+        radius = int(max(6, sigma * 3))
+        x0 = max(0, int(u) - radius)
+        x1 = min(width, int(u) + radius + 1)
+        y0 = max(0, int(v) - radius)
+        y1 = min(height, int(v) + radius + 1)
+        if x0 >= x1 or y0 >= y1:
+            continue
+
+        patch = np.exp(-(((xx[y0:y1, x0:x1] - u) ** 2 + (yy[y0:y1, x0:x1] - v) ** 2) / (2.0 * sigma * sigma)))
+        image[y0:y1, x0:x1] = np.maximum(image[y0:y1, x0:x1], patch.astype(np.float32) * strength)
+
+    max_value = float(np.max(image))
+    if max_value > 0:
+        image /= max_value
+    return image
+
+
 def strongest_point(points):
     if not points:
         return None
@@ -338,7 +388,7 @@ class RadarGui(tk.Tk):
         self.ax_yz = self.figure.add_subplot(232)
         self.ax_range = self.figure.add_subplot(233)
         self.ax_rd = self.figure.add_subplot(234)
-        self.ax_counts = self.figure.add_subplot(235)
+        self.ax_camera = self.figure.add_subplot(235)
         self.ax_info = self.figure.add_subplot(236)
 
         blank = np.zeros((80, 80), dtype=np.float32)
@@ -371,11 +421,18 @@ class RadarGui(tk.Tk):
         self.ax_rd.set_xlabel("range (m)")
         self.ax_rd.set_ylabel("velocity (m/s)")
 
-        (self.count_line,) = self.ax_counts.plot([], [], linewidth=1.5)
-        self.ax_counts.set_title("Detected Points Per Frame")
-        self.ax_counts.set_xlabel("elapsed time (s)")
-        self.ax_counts.set_ylabel("points")
-        self.ax_counts.grid(True, alpha=0.3)
+        self.camera_image = self.ax_camera.imshow(
+            np.zeros((360, 640), dtype=np.float32),
+            origin="upper",
+            aspect="auto",
+            extent=(0, 1280, 720, 0),
+            cmap="magma",
+            vmin=0,
+            vmax=1,
+        )
+        self.ax_camera.set_title("Aligned-style mmWave pseudo camera")
+        self.ax_camera.set_xlabel("image u (px)")
+        self.ax_camera.set_ylabel("image v (px)")
 
         self.ax_info.axis("off")
         self.info_text = self.ax_info.text(0.02, 0.95, "No frame yet", va="top", family="monospace")
@@ -563,16 +620,11 @@ class RadarGui(tk.Tk):
 
         self.xy_image.set_data(live_heatmap(recent_points, "xy"))
         self.yz_image.set_data(live_heatmap(recent_points, "yz"))
+        self.camera_image.set_data(pseudo_camera_image(recent_points))
         objects = cluster_points(recent_points)
         self._update_object_overlay(objects)
         self._update_range_profile(frame)
         self._update_range_doppler(frame)
-
-        self.count_line.set_data(list(self.frame_times), list(self.frame_counts))
-        if self.frame_times:
-            self.ax_counts.set_xlim(max(0, self.frame_times[0]), max(5, self.frame_times[-1]))
-        max_count = max(self.frame_counts) if self.frame_counts else 1
-        self.ax_counts.set_ylim(0, max(10, max_count * 1.2))
 
         self.info_text.set_text(
             "\n".join(

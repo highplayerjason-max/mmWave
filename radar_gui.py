@@ -150,6 +150,32 @@ def pseudo_camera_image(
     return image
 
 
+def azimuth_heatmap_image(values: list[complex], range_bins: int = 256, angle_bins: int = 128) -> np.ndarray:
+    """Build a dense range-azimuth image from TI TLV 4 static heatmap data."""
+    if not values or len(values) < range_bins:
+        return np.zeros((range_bins, angle_bins), dtype=np.float32)
+
+    antenna_count = len(values) // range_bins
+    usable = antenna_count * range_bins
+    if antenna_count < 2 or usable <= 0:
+        return np.zeros((range_bins, angle_bins), dtype=np.float32)
+
+    cube = np.array(values[:usable], dtype=np.complex64).reshape(range_bins, antenna_count)
+    cube = cube - np.mean(cube, axis=0, keepdims=True)
+    window = np.hanning(antenna_count).astype(np.float32)
+    spectrum = np.fft.fftshift(np.fft.fft(cube * window, n=angle_bins, axis=1), axes=1)
+    image = np.abs(spectrum).astype(np.float32)
+    image = np.log1p(image)
+
+    # Ignore the first bins near the board and normalize with a high percentile
+    # so one strong reflector does not make the whole image look black.
+    image[:3, :] = 0
+    scale = float(np.percentile(image, 99.5)) if image.size else 1.0
+    if scale > 0:
+        image = np.clip(image / scale, 0.0, 1.0)
+    return image
+
+
 def strongest_point(points):
     if not points:
         return None
@@ -422,17 +448,17 @@ class RadarGui(tk.Tk):
         self.ax_rd.set_ylabel("velocity (m/s)")
 
         self.camera_image = self.ax_camera.imshow(
-            np.zeros((360, 640), dtype=np.float32),
+            np.zeros((256, 128), dtype=np.float32),
             origin="upper",
             aspect="auto",
-            extent=(0, 1280, 720, 0),
+            extent=(-90, 90, 9.04, 0),
             cmap="magma",
             vmin=0,
             vmax=1,
         )
-        self.ax_camera.set_title("Aligned-style mmWave pseudo camera")
-        self.ax_camera.set_xlabel("image u (px)")
-        self.ax_camera.set_ylabel("image v (px)")
+        self.ax_camera.set_title("Range-Azimuth TLV / pseudo camera")
+        self.ax_camera.set_xlabel("azimuth angle (deg)")
+        self.ax_camera.set_ylabel("range (m)")
 
         self.ax_info.axis("off")
         self.info_text = self.ax_info.text(0.02, 0.95, "No frame yet", va="top", family="monospace")
@@ -620,7 +646,7 @@ class RadarGui(tk.Tk):
 
         self.xy_image.set_data(live_heatmap(recent_points, "xy"))
         self.yz_image.set_data(live_heatmap(recent_points, "yz"))
-        self.camera_image.set_data(pseudo_camera_image(recent_points))
+        self._update_pseudo_camera(frame, recent_points)
         objects = cluster_points(recent_points)
         self._update_object_overlay(objects)
         self._update_range_profile(frame)
@@ -632,6 +658,25 @@ class RadarGui(tk.Tk):
             )
         )
         self.canvas.draw_idle()
+
+    def _update_pseudo_camera(self, frame: dict, recent_points) -> None:
+        azimuth_values = frame.get("azimuth_static_heatmap", [])
+        if azimuth_values:
+            image = azimuth_heatmap_image(azimuth_values)
+            self.camera_image.set_data(image)
+            self.camera_image.set_extent((-90, 90, 9.04, 0))
+            self.camera_image.set_clim(0.0, 1.0)
+            self.ax_camera.set_title("Range-Azimuth TLV")
+            self.ax_camera.set_xlabel("azimuth angle (deg)")
+            self.ax_camera.set_ylabel("range (m)")
+        else:
+            image = pseudo_camera_image(recent_points)
+            self.camera_image.set_data(image)
+            self.camera_image.set_extent((0, 1280, 720, 0))
+            self.camera_image.set_clim(0.0, 1.0)
+            self.ax_camera.set_title("Point pseudo-camera fallback")
+            self.ax_camera.set_xlabel("image u (px)")
+            self.ax_camera.set_ylabel("image v (px)")
 
     def _update_object_overlay(self, objects) -> None:
         for label in self.xy_object_labels:

@@ -162,6 +162,7 @@ The GUI provides:
 - live XY, YZ, XZ, and range-velocity radar sensor images
 - live range profile, with 0.5m/1.0m/1.5m/2.0m reference lines
 - range-Doppler TLV view when enabled, with a point-derived fallback view
+- aligned-style mmWave pseudo-camera view with black background and Gaussian blobs
 - clustered object candidates overlaid on the XY view with distance/side labels
 - strongest/closest target summaries, object summaries, point-count plot, and frame status
 
@@ -207,6 +208,17 @@ current no-RGB version is:
 ```text
 TI point cloud / range profile / range-Doppler TLV
     -> XY/YZ/range-velocity sensor images
+    -> aligned-style pseudo-camera heatmap
     -> clustered object candidates
     -> optional saved radar images/tensors for later model training
 ```
+
+The pseudo-camera view treats the antenna like a low-resolution radar camera:
+
+- horizontal image position is estimated from azimuth angle
+- vertical image position is estimated from elevation angle
+- brightness comes from SNR/return strength
+- each return is expanded into a Gaussian blob to mimic the paper-style plots
+
+Without RGB calibration, this view is not a real camera overlay. It is a
+camera-like rendering of radar coordinates.

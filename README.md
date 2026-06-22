@@ -187,6 +187,23 @@ guiMonitor -1 1 1 1 0 1 1
 
 It is more interpretable, but it uses more UART bandwidth.
 
+To get a denser no-camera mmWave image, select this config instead:
+
+```powershell
+profiles\profile_3d_azimuth_heatmap.cfg
+```
+
+This enables:
+
+```text
+guiMonitor -1 1 1 1 1 0 1
+```
+
+The fifth GUI panel will then use TLV type `4`
+(`AZIMUT_STATIC_HEAT_MAP`) and render a dense range-azimuth heatmap from the
+virtual antenna complex data. This is closer to paper-style no-camera mmWave
+images than the point-cloud fallback.
+
 ### Making Sense Of Where Objects Are
 
 The raw TI OOB point cloud is not an RGB-like picture. Each point is a strong
@@ -215,10 +232,12 @@ TI point cloud / range profile / range-Doppler TLV
 
 The pseudo-camera view treats the antenna like a low-resolution radar camera:
 
-- horizontal image position is estimated from azimuth angle
-- vertical image position is estimated from elevation angle
-- brightness comes from SNR/return strength
-- each return is expanded into a Gaussian blob to mimic the paper-style plots
+- when TLV 4 is available, horizontal position comes from an antenna FFT over
+  azimuth angle and vertical position is range
+- when TLV 4 is not available, the GUI falls back to detected points expanded
+  into Gaussian blobs
+- brightness comes from radar return strength
+- the point fallback is only a visualization; TLV 4 is the better data source
 
 Without RGB calibration, this view is not a real camera overlay. It is a
 camera-like rendering of radar coordinates.

@@ -114,6 +114,14 @@ def label_panel(image: np.ndarray, text: str) -> np.ndarray:
     return out
 
 
+def radar_topdown_panel(heat: np.ndarray, width: int, height: int) -> np.ndarray:
+    if float(np.max(heat)) > 0:
+        heat = heat / float(np.max(heat))
+    image = heat_to_bgr(enhance(heat, 0.68))
+    image = cv2.flip(image, 0)
+    return cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
+
+
 def parse_limits(text: str) -> tuple[float, float, float, float]:
     values = tuple(float(value) for value in text.split(","))
     if len(values) != 4:
@@ -132,7 +140,7 @@ def main() -> int:
     parser.add_argument("--camera-index", type=int, default=1)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--limits", type=parse_limits, default=(-1.4, 1.6, 0.45, 3.0))
+    parser.add_argument("--limits", type=parse_limits, default=(-1.4, 1.6, 0.20, 3.0))
     parser.add_argument("--mm-anchor", action="append", help="two radar anchors as x,y meters")
     parser.add_argument("--px-anchor", action="append", help="two RGB anchors as u,v pixels")
     parser.add_argument("--trail-frames", type=int, default=8)
@@ -140,6 +148,7 @@ def main() -> int:
     parser.add_argument("--background-scale", type=float, default=0.85)
     parser.add_argument("--threshold", type=float, default=0.025)
     parser.add_argument("--gamma", type=float, default=0.68)
+    parser.add_argument("--no-background", action="store_true", help="Show live returns without subtracting a background model.")
     args = parser.parse_args()
 
     mm_anchors = np.array(
@@ -210,6 +219,7 @@ def main() -> int:
                     if not stop_event.is_set():
                         status = "radar stopped"
 
+            raw_points = sum(len(frame.get("points", [])) for frame in recent_frames)
             points = points_to_array(recent_frames, args.limits)
             heat = kde_heat(points, xx, yy, 0.075, 0.065)
 
@@ -222,7 +232,10 @@ def main() -> int:
 
             scene_max = max(float(np.max(heat)), float(np.max(background)), 1.0)
             live_heat = enhance(heat / scene_max, args.gamma)
-            fg_heat = np.maximum(heat - args.background_scale * background, 0.0)
+            if args.no_background:
+                fg_heat = heat.copy()
+            else:
+                fg_heat = np.maximum(heat - args.background_scale * background, 0.0)
             if float(np.max(fg_heat)) > 0:
                 fg_heat = fg_heat / float(np.max(fg_heat))
             fg_heat = enhance(fg_heat, 0.60)
@@ -234,18 +247,20 @@ def main() -> int:
                 fg_heat, xs, ys, scale, rot, trans, args.width, args.height, args.threshold, normalize=True
             )
 
+            topdown_panel = radar_topdown_panel(heat, args.width, args.height)
             live_panel = heat_to_bgr(last_heat)
             fg_overlay = overlay_heat(frame_bgr, last_fg, 0.72)
             status_text = (
                 f"Calibrating background {elapsed:.1f}/{args.background_seconds:.1f}s"
                 if calibrating
-                else f"{status} | radar frames {frame_count} | points {len(points)}"
+                else f"{status} | radar frames {frame_count} | raw pts {raw_points} | filtered pts {len(points)}"
             )
             camera_panel = label_panel(frame_bgr, "RGB camera")
+            topdown_panel = label_panel(topdown_panel, "Radar top-down before alignment")
             live_panel = label_panel(live_panel, "Live aligned mmWave")
             fg_overlay = label_panel(fg_overlay, "Foreground mmWave overlay")
 
-            combined = np.hstack([camera_panel, live_panel, fg_overlay])
+            combined = np.vstack([np.hstack([camera_panel, topdown_panel]), np.hstack([live_panel, fg_overlay])])
             cv2.putText(
                 combined,
                 status_text,
